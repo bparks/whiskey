@@ -1,0 +1,27 @@
+# What files should be copied across from local to remote?
+artifacts:
+- PhotoHub-Linux-*.tar.gz
+
+# What machines and paths should be deployed to?
+targets:
+- ubuntu@hub-fe01.shutterpilot.com:/var/www/photohub
+
+# How should we create the new deployment?
+# If $DEPLOY_DIR does not exist after this step OR it is not a directory, deployment fails
+copy:
+- cp -r photohub $DEPLOY_DIR
+
+# What should we do before setting the production symlink to point to the new deployment?
+build:
+
+# What should we do after changing the symlink?
+postinst: # anything that needs to be copied/moved elsewhere on the file system
+- sudo cp etc/cron.d/photohub-held-messages /etc/cron.d/photohub-held-messages
+
+# How do we restart the application?
+restart:
+- cd $DEPLOY_BASE/Current/
+- MYPID=$( ps faux | grep 'ShutterPilot.PhotoHub' | grep -vw grep | awk '{ print $2 }' );
+- kill -9 ${MYPID};
+- ASPNETCORE_URLS=http://0.0.0.0:5000/ nohup $DEPLOY_BASE/Current/ShutterPilot.PhotoHub &>>/var/log/photohub.log &
+- disown
