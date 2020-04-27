@@ -5,14 +5,22 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path"
 	"strings"
 
+	go_scp "github.com/bramvdbogaerde/go-scp"
 	"github.com/go-yaml/yaml"
 	"golang.org/x/crypto/ssh"
 )
 
 func main() {
 	fmt.Println("Whiskey Deploy")
+
+	// Initial command line verification
+	if len(os.Args) != 2 {
+		log.Fatalf("Usage: %s <config>", os.Args[0])
+	}
+
 	if shouldRunRemote() {
 		runRemote()
 	} else {
@@ -58,7 +66,7 @@ func runLocal() {
 
 	for _, target := range cfg.Targets {
 		fmt.Printf("Deploying to target: %v\n", target)
-		client, session, err := connect(target)
+		client, session, scpcli, err := connect(target)
 		if err != nil {
 			log.Fatalf("Can't connect: %v", err)
 		}
@@ -67,18 +75,76 @@ func runLocal() {
 		// Close the client at the end of the block
 		defer client.Close()
 
-		out, err := session.CombinedOutput(os.Args[3])
+		// export TEMPFILE=$(ssh $SSH_HOST "mktemp -d")
+		tmpfile, err := session.CombinedOutput("mktemp -d")
 		if err != nil {
 			panic(err)
 		}
+		log.Println(string(tmpfile))
+		session.Close()
+
+		//scp whiskey_remote.sh $ARTIFACTS $SSH_HOST:$TEMPFILE
+
+		// Connect to the remote server
+		err = scpcli.Connect()
+		if err != nil {
+			fmt.Println("Couldn't establish a connection to the remote server ", err)
+			return
+		}
+
+		defer scpcli.Close()
+		log.Println(scpcli.RemoteBinary)
+		scpcli.RemoteBinary = "/usr/bin/scp"
+
+		// This program
+		progname, err := os.Executable()
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Copying executable %s...", path.Base(progname))
+		prog, err := os.Open(progname)
+		if err != nil {
+			panic(err)
+		}
+		scpcli.CopyFromFile(*prog, string(tmpfile)+"/"+path.Base(progname), "0755")
+		// We don't check for errors from the above command because there is an odd 127 error code
+		fmt.Println(" DONE")
+		scpcli.Close()
+
+		// Config file
+		fmt.Printf("Copying config file %s...", os.Args[1])
+		scpcli.Connect()
+		conf, _ := os.Open(os.Args[1])
+		err = scpcli.CopyFromFile(*conf, string(tmpfile)+"/"+path.Base(os.Args[1]), "0644")
+		// We don't check for errors from the above command because there is an odd 127 error code
+		fmt.Println(" DONE")
+
+		//TODO: Copy artifacts
+
+		//ssh $SSH_HOST "cd $TEMPFILE && bash whiskey_remote.sh ; rm -rf $TEMPFILE"
+		session, _ = client.NewSession()
+		out, err := session.CombinedOutput(fmt.Sprintf("cd %s", tmpfile))
 		fmt.Println(string(out))
+		if err != nil {
+			fmt.Printf("ERROR: %v\n", err)
+		}
+		session.Close()
+
+		session, _ = client.NewSession()
+		err = session.Run(fmt.Sprintf("./%s --remote %s", path.Base(progname), path.Base(os.Args[1])))
+		fmt.Println(out)
+		if err != nil {
+			fmt.Printf("ERROR: %v\n", err)
+		}
+		session.Close()
+
+		/*session, _ = client.NewSession()
+		err = session.Run(fmt.Sprintf("rm -rf %s", tmpfile))
+		fmt.Println(out)
+		session.Close()*/
+
 		client.Close()
 	}
-
-	// export TEMPFILE=$(ssh $SSH_HOST "mktemp -d")
-
-	//scp whiskey_remote.sh $ARTIFACTS $SSH_HOST:$TEMPFILE
-	//ssh $SSH_HOST "cd $TEMPFILE && bash whiskey_remote.sh ; rm -rf $TEMPFILE"
 }
 
 type whiskeyConfig struct {
@@ -91,7 +157,7 @@ type whiskeyConfig struct {
 }
 
 func getConfig() (*whiskeyConfig, error) {
-	yamlFile, err := ioutil.ReadFile("example.whiskey-cd.yml")
+	yamlFile, err := ioutil.ReadFile(os.Args[1])
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +166,7 @@ func getConfig() (*whiskeyConfig, error) {
 	return cfg, err
 }
 
-func connect(connstr string) (*ssh.Client, *ssh.Session, error) {
+func connect(connstr string) (*ssh.Client, *ssh.Session, *go_scp.Client, error) {
 	var user, host, path string
 
 	tmp := strings.Split(connstr, ":")
@@ -131,14 +197,16 @@ func connect(connstr string) (*ssh.Client, *ssh.Session, error) {
 
 	client, err := ssh.Dial("tcp", host+":22", sshConfig)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	session, err := client.NewSession()
 	if err != nil {
 		client.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return client, session, nil
+	scpcli := go_scp.NewClient(host+":22", sshConfig)
+
+	return client, session, &scpcli, nil
 }
