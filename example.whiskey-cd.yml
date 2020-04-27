@@ -4,7 +4,7 @@ artifacts:
 
 # What machines and paths should be deployed to?
 targets:
-- ubuntu@hub-fe01.shutterpilot.com:/var/www/photohub
+- bparks@othniel.synapsesoftware.net:/export/www/whiskey
 
 # How should we create the new deployment?
 # If $DEPLOY_DIR does not exist after this step OR it is not a directory, deployment fails
