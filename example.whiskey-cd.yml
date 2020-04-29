@@ -1,6 +1,7 @@
 # What files should be copied across from local to remote?
 artifacts:
-- PhotoHub-Linux-*.tar.gz
+- example.tar.gz
+- doesnotexist*
 
 # What machines and paths should be deployed to?
 targets:

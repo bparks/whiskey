@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -95,7 +96,6 @@ func runLocal() {
 			return
 		}
 
-		defer scpcli.Close()
 		log.Println(scpcli.RemoteBinary)
 		scpcli.RemoteBinary = "/usr/bin/scp"
 
@@ -121,8 +121,29 @@ func runLocal() {
 		err = scpcli.CopyFromFile(*conf, string(tmpfile)+"/"+path.Base(os.Args[1]), "0644")
 		// We don't check for errors from the above command because there is an odd 127 error code
 		fmt.Println(" DONE")
+		scpcli.Close()
 
 		//TODO: Copy artifacts
+		for _, artifact := range cfg.Artifacts {
+			matches, err := filepath.Glob(artifact)
+			if err != nil {
+				fmt.Printf("Could not find %s\n", artifact)
+				continue
+			}
+			if len(matches) == 0 {
+				fmt.Printf("Could not find %s\n", artifact)
+				continue
+			}
+			for _, match := range matches {
+				fmt.Printf("Copying file %s...", match)
+				scpcli.Connect()
+				conf, _ := os.Open(os.Args[1])
+				err = scpcli.CopyFromFile(*conf, string(tmpfile)+"/"+path.Base(match), "0644")
+				// We don't check for errors from the above command because there is an odd 127 error code
+				fmt.Println(" DONE")
+				scpcli.Close()
+			}
+		}
 
 		//ssh $SSH_HOST "cd $TEMPFILE && bash whiskey_remote.sh ; rm -rf $TEMPFILE"
 		session, _ = client.NewSession()
