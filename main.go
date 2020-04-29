@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -20,8 +22,8 @@ func main() {
 	fmt.Println("Whiskey Deploy")
 
 	// Initial command line verification
-	if len(os.Args) != 2 {
-		log.Fatalf("Usage: %s <config>", os.Args[0])
+	if len(os.Args) < 2 || len(os.Args) > 3 {
+		log.Fatalf("Usage: %s [--remote] <config>", os.Args[0])
 	}
 
 	if shouldRunRemote() {
@@ -32,14 +34,50 @@ func main() {
 }
 
 func shouldRunRemote() bool {
-	return false
+	return os.Args[1] == "--remote"
 }
 
 func runRemote() {
 	fmt.Println("Running Remote tasks")
 
+	cfg, err := getConfig()
+	if err != nil {
+		log.Fatalf("error: %v", err)
+	}
+
 	// Unpack files
 	// tar zxf PhotoHub-Linux-*.tar.gz
+	for _, artifact := range cfg.Artifacts {
+		matches, err := filepath.Glob(artifact)
+		if err != nil {
+			fmt.Printf("Could not find %s\n", artifact)
+			continue
+		}
+		if len(matches) == 0 {
+			fmt.Printf("Could not find %s\n", artifact)
+			continue
+		}
+		for _, match := range matches {
+			fmt.Printf("Unpacking file %s...", match)
+			// TODO: Support different file types
+			err = unpackTarGz(match)
+			if err != nil {
+				fmt.Printf("ERROR: %v\n", err)
+			} else {
+				fmt.Println("DONE")
+			}
+		}
+	}
+
+	fmt.Println("After unpacking, the following files are present: ")
+	files, err := ioutil.ReadDir(".")
+	if err != nil {
+		fmt.Printf("ERROR Listing files %v\n", err)
+	} else {
+		for _, dir := range files {
+			fmt.Println(dir.Name())
+		}
+	}
 
 	// NEW=$(date +'%s')
 
@@ -123,7 +161,7 @@ func runLocal() {
 		fmt.Println(" DONE")
 		scpcli.Close()
 
-		//TODO: Copy artifacts
+		// Copy artifacts
 		for _, artifact := range cfg.Artifacts {
 			matches, err := filepath.Glob(artifact)
 			if err != nil {
@@ -137,7 +175,7 @@ func runLocal() {
 			for _, match := range matches {
 				fmt.Printf("Copying file %s...", match)
 				scpcli.Connect()
-				conf, _ := os.Open(os.Args[1])
+				conf, _ := os.Open(match)
 				err = scpcli.CopyFromFile(*conf, string(tmpfile)+"/"+path.Base(match), "0644")
 				// We don't check for errors from the above command because there is an odd 127 error code
 				fmt.Println(" DONE")
@@ -168,7 +206,7 @@ func runLocal() {
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
-			cmd := fmt.Sprintf("cd %s && ./%s --remote %s ; rm -rf %s ; exit\n", tmpfile, path.Base(progname), path.Base(os.Args[1]), tmpfile)
+			cmd := fmt.Sprintf("cd %s && ./%s --remote %s ; exit\n", tmpfile, path.Base(progname), path.Base(os.Args[1]) /*, tmpfile*/) // ; rm -rf %s
 			fmt.Print("Running command: " + cmd)
 			_, err = in.Write([]byte(cmd))
 			if err != nil {
@@ -210,7 +248,13 @@ type whiskeyConfig struct {
 }
 
 func getConfig() (*whiskeyConfig, error) {
-	yamlFile, err := ioutil.ReadFile(os.Args[1])
+	var cfgpath string
+	if os.Args[1] == "--remote" {
+		cfgpath = os.Args[2]
+	} else {
+		cfgpath = os.Args[1]
+	}
+	yamlFile, err := ioutil.ReadFile(cfgpath)
 	if err != nil {
 		return nil, err
 	}
@@ -262,4 +306,60 @@ func connect(connstr string) (*ssh.Client, *ssh.Session, *go_scp.Client, error) 
 	scpcli := go_scp.NewClient(host+":22", sshConfig)
 
 	return client, session, &scpcli, nil
+}
+
+func unpackTarGz(filename string) error {
+	// Pulled pretty much directly from https://stackoverflow.com/questions/57639648/how-to-decompress-tar-gz-file-in-go
+	var err error = nil
+
+	gzipStream, err := os.Open(filename)
+	if err != nil {
+		fmt.Println("Open error")
+		return err
+	}
+
+	// Why do we need zlib rather than gzip?
+	uncompressedStream, err := gzip.NewReader(gzipStream)
+	if err != nil {
+		fmt.Println("Decompress error")
+		return err
+	}
+
+	tarReader := tar.NewReader(uncompressedStream)
+
+	for true {
+		header, err := tarReader.Next()
+
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			fmt.Println("Read error")
+			return err
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.Mkdir(header.Name, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			outFile, err := os.Create(header.Name)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				return err
+			}
+			outFile.Close()
+
+		default:
+			log.Fatalf(
+				"unpackTarGz: uknown type: %d in %s",
+				header.Typeflag,
+				header.Name)
+		}
+	}
+	return nil
 }
