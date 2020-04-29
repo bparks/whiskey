@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"path"
 	"strings"
+	"sync"
 
 	go_scp "github.com/bramvdbogaerde/go-scp"
 	"github.com/go-yaml/yaml"
@@ -76,10 +78,11 @@ func runLocal() {
 		defer client.Close()
 
 		// export TEMPFILE=$(ssh $SSH_HOST "mktemp -d")
-		tmpfile, err := session.CombinedOutput("mktemp -d")
+		tmpfilestream, err := session.CombinedOutput("mktemp -d")
 		if err != nil {
 			panic(err)
 		}
+		tmpfile := strings.TrimSpace(string(tmpfilestream))
 		log.Println(string(tmpfile))
 		session.Close()
 
@@ -123,25 +126,54 @@ func runLocal() {
 
 		//ssh $SSH_HOST "cd $TEMPFILE && bash whiskey_remote.sh ; rm -rf $TEMPFILE"
 		session, _ = client.NewSession()
-		out, err := session.CombinedOutput(fmt.Sprintf("cd %s", tmpfile))
-		fmt.Println(string(out))
+		in, err := session.StdinPipe()
 		if err != nil {
-			fmt.Printf("ERROR: %v\n", err)
+			fmt.Printf("ERROR Opening Stdin: %v\n", err)
 		}
-		session.Close()
-
-		session, _ = client.NewSession()
-		err = session.Run(fmt.Sprintf("./%s --remote %s", path.Base(progname), path.Base(os.Args[1])))
-		fmt.Println(out)
+		out, err := session.StdoutPipe()
 		if err != nil {
-			fmt.Printf("ERROR: %v\n", err)
+			fmt.Printf("ERROR Opening Stdout: %v\n", err)
 		}
-		session.Close()
+		errs, err := session.StderrPipe()
+		if err != nil {
+			fmt.Printf("ERROR Opening Stderr: %v\n", err)
+		}
+		err = session.Shell()
+		if err != nil {
+			fmt.Printf("ERROR Opening Shell: %v\n", err)
+		}
+		fmt.Printf("Shell opened\n")
 
-		/*session, _ = client.NewSession()
-		err = session.Run(fmt.Sprintf("rm -rf %s", tmpfile))
-		fmt.Println(out)
-		session.Close()*/
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			cmd := fmt.Sprintf("cd %s && ./%s --remote %s ; rm -rf %s ; exit\n", tmpfile, path.Base(progname), path.Base(os.Args[1]), tmpfile)
+			fmt.Print("Running command: " + cmd)
+			_, err = in.Write([]byte(cmd))
+			if err != nil {
+				fmt.Printf("ERROR Writing command to shell: %v\n", err)
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			_, err = io.Copy(os.Stdout, out)
+			if err != nil {
+				fmt.Printf("ERROR writing output: %v\n", err)
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			_, err = io.Copy(os.Stderr, errs)
+			if err != nil {
+				fmt.Printf("ERROR writing stderr: %v\n", err)
+			}
+		}()
+
+		wg.Wait()
+
+		session.Close()
 
 		client.Close()
 	}
