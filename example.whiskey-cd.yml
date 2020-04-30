@@ -5,24 +5,28 @@ artifacts:
 
 # What machines and paths should be deployed to?
 targets:
-- bparks@othniel.synapsesoftware.net:/export/www/whiskey
+- bparks@othniel.synapsesoftware.net
+
+# What path should we deploy to (we take the opinion that this should be the same for all targets)
+deploy_base: /export/www/whiskey
 
 # How should we create the new deployment?
 # If $DEPLOY_DIR does not exist after this step OR it is not a directory, deployment fails
 copy:
-- cp -r photohub $DEPLOY_DIR
+- mkdir -p $DEPLOY_DIR
+- cp -r example $DEPLOY_DIR
+#- false # uncomment this to force a failure
 
 # What should we do before setting the production symlink to point to the new deployment?
 build:
 
 # What should we do after changing the symlink?
 postinst: # anything that needs to be copied/moved elsewhere on the file system
-- sudo cp etc/cron.d/photohub-held-messages /etc/cron.d/photohub-held-messages
+- date > $DEPLOY_DIR/deployed
 
 # How do we restart the application?
 restart:
-- cd $DEPLOY_BASE/Current/
-- MYPID=$( ps faux | grep 'ShutterPilot.PhotoHub' | grep -vw grep | awk '{ print $2 }' );
-- kill -9 ${MYPID};
-- ASPNETCORE_URLS=http://0.0.0.0:5000/ nohup $DEPLOY_BASE/Current/ShutterPilot.PhotoHub &>>/var/log/photohub.log &
-- disown
+- cd $DEPLOY_DIR
+- MYPID=$( ps faux | grep 'sh example' | grep -vw grep | awk '{ print $2 }' );
+- "[ -z ${MYPID} ] || kill -9 ${MYPID}"
+- nohup sh example

@@ -8,10 +8,13 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	go_scp "github.com/bramvdbogaerde/go-scp"
 	"github.com/go-yaml/yaml"
@@ -80,21 +83,56 @@ func runRemote() {
 	}
 
 	// NEW=$(date +'%s')
+	newFolder := strconv.FormatInt(time.Now().Unix(), 10)
+	// DEPLOY_DIR=$DEPLOY_BASE/$NEW # Set this in the environment where all scripts are run
+	deployDir := path.Join(cfg.DeployBase, newFolder)
+	fmt.Printf("Using DEPLOY_DIR=%s\n", deployDir)
+
+	// TODO: For some reason, this isn't working, so let's just use /bin/bash
+	// Get the user's default shell
+	/*shcommand := exec.Command("getent passwd `id -un` | cut -d: -f7")
+	shellstr, err := shcommand.CombinedOutput()
+	shell := strings.TrimSpace(string(shellstr))*/
+	shell := "/bin/bash"
+
+	fmt.Printf("Running commands using shell %s\n", shell)
 
 	// Copy files [copy]
+	fmt.Println("Running copy commands...")
+	runCommands(cfg.Copy, shell, fmt.Sprintf("DEPLOY_DIR=%s", deployDir))
+
+	// If $DEPLOY_DIR does not exist after this step OR it is not a directory, deployment fails
+	fmt.Println("Verifying existence of new version...")
+	if stat, err := os.Stat(deployDir); err != nil || !stat.IsDir() {
+		fmt.Printf("Deploy directory %s was not created by 'copy' step\n", deployDir)
+		os.Exit(1)
+	}
 
 	// Build [build]
+	fmt.Println("Running build commands...")
+	runCommands(cfg.Build, shell, fmt.Sprintf("DEPLOY_DIR=%s", deployDir))
 
-	// Switch symlink
+	// Switch symlink (relative symlink)
 	// ln -sfn $NEW $DEPLOY_BASE/Current
+	fmt.Println("Updating symlink...")
+	runCommands([]string{fmt.Sprintf("ln -sfn %s %s/Current", newFolder, cfg.DeployBase)}, shell)
 
 	// Postinst [postinst]
+	fmt.Println("Running post-install commands...")
+	runCommands(cfg.Postinst, shell, fmt.Sprintf("DEPLOY_DIR=%s", deployDir))
 
 	// Restart/reload the app [restart]
+	fmt.Println("Running restart commands...")
+	runCommands(cfg.Restart, shell, fmt.Sprintf("DEPLOY_DIR=%s", deployDir))
 
 	// And clean up old deployments
 	// cd $DEPLOY_BASE/
 	// ls -1tr | grep -v Current | head -n -5 | xargs -r rm -r
+	fmt.Println("Cleaning up old deployments...")
+	runCommands([]string{
+		fmt.Sprintf("cd %s", cfg.DeployBase),
+		"ls -1tr | grep -v Current | head -n -5 | xargs -r rm -r"},
+		shell)
 }
 
 func runLocal() {
@@ -206,7 +244,7 @@ func runLocal() {
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
-			cmd := fmt.Sprintf("cd %s && ./%s --remote %s ; exit\n", tmpfile, path.Base(progname), path.Base(os.Args[1]) /*, tmpfile*/) // ; rm -rf %s
+			cmd := fmt.Sprintf("cd %s && ./%s --remote %s ; STATUS=$? ; rm -rf %s ; exit $STATUS\n", tmpfile, path.Base(progname), path.Base(os.Args[1]), tmpfile)
 			fmt.Print("Running command: " + cmd)
 			_, err = in.Write([]byte(cmd))
 			if err != nil {
@@ -232,19 +270,22 @@ func runLocal() {
 
 		wg.Wait()
 
-		session.Close()
+		if err = session.Wait(); err != nil {
+			log.Fatalf("SSH session closed with error %v", err)
+		}
 
 		client.Close()
 	}
 }
 
 type whiskeyConfig struct {
-	Artifacts []string
-	Targets   []string
-	Copy      []string
-	Build     []string
-	Postinst  []string
-	Restart   []string
+	Artifacts  []string
+	Targets    []string
+	DeployBase string `yaml:"deploy_base"`
+	Copy       []string
+	Build      []string
+	Postinst   []string
+	Restart    []string
 }
 
 func getConfig() (*whiskeyConfig, error) {
@@ -264,17 +305,14 @@ func getConfig() (*whiskeyConfig, error) {
 }
 
 func connect(connstr string) (*ssh.Client, *ssh.Session, *go_scp.Client, error) {
-	var user, host, path string
+	var user, host string
 
-	tmp := strings.Split(connstr, ":")
-	path = tmp[1]
-	tmp2 := strings.Split(tmp[0], "@")
-	user = tmp2[0]
-	host = tmp2[1]
+	tmp := strings.Split(connstr, "@")
+	user = tmp[0]
+	host = tmp[1]
 
 	log.Printf("User: %s", user)
 	log.Printf("Host: %s", host)
-	log.Printf("Path: %s", path)
 
 	key := os.Getenv("SCP_PRIVATE_KEY")
 	if key == "" {
@@ -362,4 +400,60 @@ func unpackTarGz(filename string) error {
 		}
 	}
 	return nil
+}
+
+func runCommands(commands []string, shell string, envVars ...string) {
+	command := exec.Command(shell)
+	for _, envVar := range envVars {
+		command.Env = append(command.Env, envVar)
+	}
+	commandStdin, err := command.StdinPipe()
+	if err != nil {
+		fmt.Println("ERROR Opening Stdin")
+	}
+	commandStdout, err := command.StdoutPipe()
+	if err != nil {
+		fmt.Println("ERROR Opening Stdout")
+	}
+	commandStderr, err := command.StderrPipe()
+	if err != nil {
+		fmt.Println("ERROR Opening Stderr")
+	}
+	err = command.Start()
+	if err != nil {
+		fmt.Println("ERROR Starting shell")
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { // Stdin
+		commandStdin.Write([]byte("set -ev\n"))
+		for _, cmd := range commands {
+			commandStdin.Write([]byte(cmd + "\n"))
+		}
+		commandStdin.Write([]byte("exit\n"))
+	}()
+
+	go func() {
+		defer wg.Done()
+		_, err = io.Copy(os.Stdout, commandStdout)
+		if err != nil {
+			fmt.Printf("ERROR writing output: %v\n", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		_, err = io.Copy(os.Stderr, commandStderr)
+		if err != nil {
+			fmt.Printf("ERROR writing stderr: %v\n", err)
+		}
+	}()
+
+	wg.Wait()
+	if err = command.Wait(); err != nil {
+		if exiterr, ok := err.(*exec.ExitError); ok {
+			log.Fatalf("Deployment failed with code %d\n", exiterr.ExitCode())
+		}
+	}
 }
