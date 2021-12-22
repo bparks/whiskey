@@ -117,6 +117,18 @@ func runRemote() {
 	fmt.Println("Updating symlink...")
 	runCommands([]string{fmt.Sprintf("ln -sfn %s %s/Current", newFolder, cfg.DeployBase)}, shell)
 
+	// Copy contents of .config to new deploy
+	// cp -r $DEPLOY_BASE/.config/* $DEPLOY_BASE/.config/.* $DEPLOY_BASE/Current/
+	fmt.Println("Copying environment-specific config, if present")
+	if stat, err := os.Stat(fmt.Sprintf("%s/.config", cfg.DeployBase)); err == nil {
+		if stat.IsDir() {
+			runCommands([]string{fmt.Sprintf("cp -r %s/.config/* %s/.config/.[!.]* %s/Current", cfg.DeployBase, cfg.DeployBase, cfg.DeployBase)}, shell)
+		} else {
+			fmt.Printf("WARNING: %s/.config is not a directory, ignoring", cfg.DeployBase)
+			fmt.Println()
+		}
+	}
+
 	// Postinst [postinst]
 	fmt.Println("Running post-install commands...")
 	runCommands(cfg.Postinst, shell, fmt.Sprintf("DEPLOY_DIR=%s", deployDir))
@@ -365,7 +377,7 @@ func unpackTarGz(filename string) error {
 
 	tarReader := tar.NewReader(uncompressedStream)
 
-	for true {
+	for {
 		header, err := tarReader.Next()
 
 		if err == io.EOF {
@@ -404,9 +416,7 @@ func unpackTarGz(filename string) error {
 
 func runCommands(commands []string, shell string, envVars ...string) {
 	command := exec.Command(shell)
-	for _, envVar := range envVars {
-		command.Env = append(command.Env, envVar)
-	}
+	command.Env = append(command.Env, envVars...)
 	commandStdin, err := command.StdinPipe()
 	if err != nil {
 		fmt.Println("ERROR Opening Stdin")
