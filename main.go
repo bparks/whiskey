@@ -122,7 +122,7 @@ func runRemote() {
 	fmt.Println("Copying environment-specific config, if present")
 	if stat, err := os.Stat(fmt.Sprintf("%s/.config", cfg.DeployBase)); err == nil {
 		if stat.IsDir() {
-			runCommands([]string{fmt.Sprintf("cp -r %s/.config/* %s/.config/.[!.]* %s/Current", cfg.DeployBase, cfg.DeployBase, cfg.DeployBase)}, shell)
+			runCommands([]string{fmt.Sprintf("cp -r %s/.config/{*,.[!.]*} %s/Current", cfg.DeployBase, cfg.DeployBase)}, shell)
 		} else {
 			fmt.Printf("WARNING: %s/.config is not a directory, ignoring", cfg.DeployBase)
 			fmt.Println()
