@@ -143,7 +143,7 @@ func runRemote() {
 	fmt.Println("Cleaning up old deployments...")
 	runCommands([]string{
 		fmt.Sprintf("cd %s", cfg.DeployBase),
-		"ls -1tr | grep -v Current | head -n -5 | xargs -r rm -r"},
+		"ls -1tr | grep -v Current | grep -v .config | head -n -5 | xargs -r rm -r"},
 		shell)
 }
 
