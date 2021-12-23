@@ -120,11 +120,16 @@ func runRemote() {
 	// Copy contents of .config to new deploy
 	// cp -r $DEPLOY_BASE/.config/* $DEPLOY_BASE/.config/.* $DEPLOY_BASE/Current/
 	fmt.Println("Copying environment-specific config, if present")
-	if stat, err := os.Stat(fmt.Sprintf("%s/.config", cfg.DeployBase)); err == nil {
+	configDir := fmt.Sprintf("%s/.config", cfg.DeployBase)
+	if stat, err := os.Stat(configDir); err == nil {
 		if stat.IsDir() {
-			runCommands([]string{fmt.Sprintf("cp -r %s/.config/{*,.[!.]*} %s/Current", cfg.DeployBase, cfg.DeployBase)}, shell)
+			if files, err := ioutil.ReadDir(configDir); err == nil {
+				for _, file := range files {
+					runCommands([]string{fmt.Sprintf("cp -rp %s/%s %s/Current", configDir, file.Name(), cfg.DeployBase)}, shell)
+				}
+			}
 		} else {
-			fmt.Printf("WARNING: %s/.config is not a directory, ignoring", cfg.DeployBase)
+			fmt.Printf("WARNING: %s is not a directory, ignoring", configDir)
 			fmt.Println()
 		}
 	}
